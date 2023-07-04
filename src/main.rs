@@ -12,10 +12,10 @@
 
 use futures_util::stream::FuturesUnordered;
 use futures_util::{SinkExt, StreamExt};
-use tokio_tungstenite::tungstenite::handshake::client::{Request, generate_key};
 use std::borrow::Cow;
-use std::ops::ControlFlow;
 use std::fs;
+use std::ops::ControlFlow;
+use tokio_tungstenite::tungstenite::handshake::client::{generate_key, Request};
 
 // we will use tungstenite for websocket client impl (same library as what axum is using)
 use tokio_tungstenite::{
@@ -38,7 +38,6 @@ const N_CLIENTS: usize = 1; //set to desired number
 
 #[tokio::main]
 async fn main() {
-   
     //spawn several clients that will concurrently talk to the server
     let mut clients = (0..N_CLIENTS)
         .map(|cli| tokio::spawn(spawn_client(cli)))
@@ -51,17 +50,17 @@ async fn main() {
 //creates a client. quietly exits on failure.
 async fn spawn_client(who: usize) {
     let args = Args::parse();
-    let req = 
-    Request::builder()
-    .method("GET")
-    .header("Host", args.hostname)
-    .header("Connection", "Upgrade")
-    .header("Upgrade", "websocket")
-    .header("Sec-WebSocket-Version", "13")
-    .header("Sec-WebSocket-Key", generate_key())
-    .header("User-Agent", "internal-monitoring-agent/1.0")
-    .uri(args.server)
-    .body(()).unwrap();
+    let req = Request::builder()
+        .method("GET")
+        .header("Host", args.hostname)
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", generate_key())
+        .header("User-Agent", "internal-monitoring-agent/1.0")
+        .uri(args.server)
+        .body(())
+        .unwrap();
 
     let ws_stream = match connect_async(req).await {
         Ok((stream, response)) => {
@@ -86,13 +85,17 @@ async fn spawn_client(who: usize) {
         .expect("Can not send!");
 
     //spawn an async sender to push some more messages into the server
-        let mut send_task = tokio::spawn(async move {
-            let _send_os_version = sender.send(Message::Text("os:".to_string() + &read_os_version())).await;
-            let _send_uptime = sender.send(Message::Text("uptime:".to_string() + &read_uptime())).await;
-            tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
-            // if send_os_version.is_err() || send_uptime.is_err() {
-            //     println!("errrrrr");
-            // } 
+    let mut send_task = tokio::spawn(async move {
+        let _send_os_version = sender
+            .send(Message::Text("os:".to_string() + &read_os_version()))
+            .await;
+        let _send_uptime = sender
+            .send(Message::Text("uptime:".to_string() + &read_uptime()))
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+        // if send_os_version.is_err() || send_uptime.is_err() {
+        //     println!("errrrrr");
+        // }
 
         //     if sender
         //     .send(Message::Text(read_os_version()))
@@ -103,21 +106,19 @@ async fn spawn_client(who: usize) {
         //     return;
         // }
 
+        // for i in 1..30 {
+        //     // In any websocket error, break loop.
+        //     if sender
+        //         .send(Message::Text(read_os_version()))
+        //         .await
+        //         .is_err()
+        //     {
+        //         //just as with server, if send fails there is nothing we can do but exit.
+        //         return;
+        //     }
 
-            // for i in 1..30 {
-            //     // In any websocket error, break loop.
-            //     if sender
-            //         .send(Message::Text(read_os_version()))
-            //         .await
-            //         .is_err()
-            //     {
-            //         //just as with server, if send fails there is nothing we can do but exit.
-            //         return;
-            //     }
-    
-            //     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            // }
-
+        //     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // }
 
         // When we are done we may want our client to close connection cleanly.
         println!("Sending close to {}...", who);
@@ -196,7 +197,10 @@ fn read_os_version() -> String {
     println!("os");
     match fs::read_to_string("/etc/os-release") {
         Ok(os) => os,
-        Err(_) => "OS Release (/etc/os-release) could not be opened on client, insufficient rights?".into()
+        Err(_) => {
+            "OS Release (/etc/os-release) could not be opened on client, insufficient rights?"
+                .into()
+        }
     }
 }
 
@@ -205,7 +209,7 @@ fn read_uptime() -> String {
         Ok(uptime) => {
             let (up_sec, _) = uptime.split_once(' ').unwrap_or(("0", "0"));
             up_sec.into()
-        },
-        Err(_) => "Uptime (/proc/uptime) could not be read on client, insufficient rights?".into()
+        }
+        Err(_) => "Uptime (/proc/uptime) could not be read on client, insufficient rights?".into(),
     }
 }
