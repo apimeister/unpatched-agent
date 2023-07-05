@@ -15,6 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use std::borrow::Cow;
 use std::fs;
 use std::ops::ControlFlow;
+use std::time::Duration;
 use tokio_tungstenite::tungstenite::handshake::client::{generate_key, Request};
 
 // we will use tungstenite for websocket client impl (same library as what axum is using)
@@ -34,17 +35,19 @@ struct Args {
     hostname: String,
 }
 
-const N_CLIENTS: usize = 1; //set to desired number
+const RETRY: Duration = Duration::new(5, 0); //set to desired number
 
 #[tokio::main]
 async fn main() {
-    //spawn several clients that will concurrently talk to the server
-    let mut clients = (0..N_CLIENTS)
-        .map(|cli| tokio::spawn(spawn_client(cli)))
-        .collect::<FuturesUnordered<_>>();
-
-    //wait for all our clients to exit
-    while clients.next().await.is_some() {}
+    // Dont die on connection loss
+    loop {
+        let _ = tokio::spawn(spawn_client(0)).await;
+        println!(
+            "Lost Connection to server, retrying in {} seconds ...",
+            RETRY.as_secs()
+        );
+        tokio::time::sleep(RETRY).await;
+    }
 }
 
 //creates a client. quietly exits on failure.
@@ -92,45 +95,6 @@ async fn spawn_client(who: usize) {
         let _send_uptime = sender
             .send(Message::Text("uptime:".to_string() + &read_uptime()))
             .await;
-        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
-        // if send_os_version.is_err() || send_uptime.is_err() {
-        //     println!("errrrrr");
-        // }
-
-        //     if sender
-        //     .send(Message::Text(read_os_version()))
-        //     .await
-        //     .is_err()
-        // {
-        //     //just as with server, if send fails there is nothing we can do but exit.
-        //     return;
-        // }
-
-        // for i in 1..30 {
-        //     // In any websocket error, break loop.
-        //     if sender
-        //         .send(Message::Text(read_os_version()))
-        //         .await
-        //         .is_err()
-        //     {
-        //         //just as with server, if send fails there is nothing we can do but exit.
-        //         return;
-        //     }
-
-        //     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        // }
-
-        // When we are done we may want our client to close connection cleanly.
-        println!("Sending close to {}...", who);
-        if let Err(e) = sender
-            .send(Message::Close(Some(CloseFrame {
-                code: CloseCode::Normal,
-                reason: Cow::from("Goodbye"),
-            })))
-            .await
-        {
-            println!("Could not send Close due to {:?}, probably it is ok?", e);
-        };
     });
 
     //receiver just prints whatever it gets
@@ -138,20 +102,29 @@ async fn spawn_client(who: usize) {
         while let Some(Ok(msg)) = receiver.next().await {
             // print message and break if instructed to do so
             if process_message(msg, who).is_break() {
+                println!("we are breaking!");
                 break;
             }
         }
     });
 
-    //wait for either task to finish and kill the other task
-    tokio::select! {
-        _ = (&mut send_task) => {
-            recv_task.abort();
-        },
-        _ = (&mut recv_task) => {
-            send_task.abort();
-        }
-    }
+    let a = send_task.await;
+    let b = recv_task.await;
+
+    println!("a: {:?}", a);
+    println!("b: {:?}", b);
+
+    // When we are done we may want our client to close connection cleanly.
+    // println!("Sending close to {}...", who);
+    // if let Err(e) = sender
+    //     .send(Message::Close(Some(CloseFrame {
+    //         code: CloseCode::Normal,
+    //         reason: Cow::from("Goodbye"),
+    //     })))
+    //     .await
+    // {
+    //     println!("Could not send Close due to {:?}, probably it is ok?", e);
+    // };
 }
 
 /// Function to handle messages we get (with a slight twist that Frame variant is visible
