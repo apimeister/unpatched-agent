@@ -1,47 +1,29 @@
-//! Based on tokio-tungstenite example websocket client, but with multiple
-//! concurrent websocket clients in one package
-//!
-//! This will connect to a server specified in the SERVER with N_CLIENTS
-//! concurrent connections, and then flood some test messages over websocket.
-//! This will also print whatever it gets into stdout.
-//!
-//! Note that this is not currently optimized for performance, especially around
-//! stdout mutex management. Rather it's intended to show an example of working with axum's
-//! websocket server and how the client-side and server-side code can be quite similar.
-//!
-
-use futures_util::stream::FuturesUnordered;
+use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
-use std::borrow::Cow;
 use std::fs;
 use std::ops::ControlFlow;
 use std::time::Duration;
-use tokio_tungstenite::tungstenite::handshake::client::{generate_key, Request};
-
-// we will use tungstenite for websocket client impl (same library as what axum is using)
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::protocol::{frame::coding::CloseCode, CloseFrame, Message},
-};
-
-use clap::Parser;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::protocol::Message;
+use uuid::Uuid;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     #[arg(short, long)]
     server: String,
-    #[arg(long)]
-    hostname: String,
+    #[arg(short, long)]
+    alias: String,
 }
 
 const RETRY: Duration = Duration::new(5, 0); //set to desired number
 
 #[tokio::main]
 async fn main() {
+    let agent_id = Uuid::new_v4().to_string();
     // Dont die on connection loss
     loop {
-        let _ = tokio::spawn(spawn_client(0)).await;
+        let _ = tokio::spawn(spawn_client(0, agent_id.clone())).await;
         println!(
             "Lost Connection to server, retrying in {} seconds ...",
             RETRY.as_secs()
@@ -51,21 +33,21 @@ async fn main() {
 }
 
 //creates a client. quietly exits on failure.
-async fn spawn_client(who: usize) {
+async fn spawn_client(who: usize, agent_id: String) {
     let args = Args::parse();
-    let req = Request::builder()
-        .method("GET")
-        .header("Host", args.hostname)
-        .header("Connection", "Upgrade")
-        .header("Upgrade", "websocket")
-        .header("Sec-WebSocket-Version", "13")
-        .header("Sec-WebSocket-Key", generate_key())
-        .header("User-Agent", "internal-monitoring-agent/1.0")
-        .uri(args.server)
-        .body(())
-        .unwrap();
+    // let req = Request::builder()
+    //     .method("GET")
+    //     .header("Host", args.hostname)
+    //     .header("Connection", "Upgrade")
+    //     .header("Upgrade", "websocket")
+    //     .header("Sec-WebSocket-Version", "13")
+    //     .header("Sec-WebSocket-Key", generate_key())
+    //     .header("User-Agent", "internal-monitoring-agent/1.0")
+    //     .uri(args.server)
+    //     .body(())
+    //     .unwrap();
 
-    let ws_stream = match connect_async(req).await {
+    let ws_stream = match connect_async(args.server).await {
         Ok((stream, response)) => {
             println!("Handshake for client {} has been completed", who);
             // This will be the HTTP response, same as with server this is the last moment we
@@ -88,7 +70,14 @@ async fn spawn_client(who: usize) {
         .expect("Can not send!");
 
     //spawn an async sender to push some more messages into the server
-    let mut send_task = tokio::spawn(async move {
+    let send_task = tokio::spawn(async move {
+        let _send_alias = sender
+            .send(Message::Text("uuid:".to_string() + &agent_id))
+            .await;
+
+        let _send_alias = sender
+            .send(Message::Text("alias:".to_string() + &args.alias))
+            .await;
         let _send_os_version = sender
             .send(Message::Text("os:".to_string() + &read_os_version()))
             .await;
@@ -98,7 +87,7 @@ async fn spawn_client(who: usize) {
     });
 
     //receiver just prints whatever it gets
-    let mut recv_task = tokio::spawn(async move {
+    let recv_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = receiver.next().await {
             // print message and break if instructed to do so
             if process_message(msg, who).is_break() {
