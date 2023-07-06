@@ -1,17 +1,10 @@
 use clap::Parser;
-use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
-use once_cell::sync::Lazy;
-use std::fs;
-use std::ops::{ControlFlow, Deref};
-use std::sync::{Arc, Mutex};
+use std::ops::{ControlFlow};
 use std::time::Duration;
 use sysinfo::{System, SystemExt};
-use tokio::net::TcpStream;
-use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::task::JoinHandle;
+use tokio::sync::mpsc::{self, Sender};
 use tokio_tungstenite::tungstenite::protocol::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
@@ -23,10 +16,7 @@ struct Args {
     alias: String,
 }
 
-const RETRY: Duration = Duration::new(5, 0); //set to desired number
-
-// static SYSINFO: Lazy<Mutex<System>> =
-//     Lazy::new(|| {let mut sys = System::new_all(); sys.refresh_all(); sys.into() });
+const RETRY: Duration = Duration::new(5, 0);
 
 #[tokio::main]
 async fn main() {
@@ -48,18 +38,18 @@ async fn main() {
             .await
             .unwrap();
         // split websocket stream so we can have both directions working independently
-        let (mut sender, mut receiver) = ws_stream.split();
+        let (sender, mut receiver) = ws_stream.split();
 
         // trigger first data send via mpsc channel
         let _tx_send = tx.send(true).await;
 
         // all things outgoing
-        let sender_handle = tokio::spawn(async move {
+        let _sender_handle = tokio::spawn(async move {
             let mut sink = sender;
             let _ping = sink.feed(Message::Ping("Hello, Server!".into())).await;
 
             loop {
-                if let Some(rec) = rx.recv().await {
+                if let Some(_data_trigger) = rx.recv().await {
                     let mut sys = System::new_all();
                     sys.refresh_all();
                     let os_version = sys.long_os_version().unwrap_or("".into());
