@@ -1,6 +1,6 @@
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
-use std::ops::{ControlFlow};
+use std::ops::ControlFlow;
 use std::time::Duration;
 use sysinfo::{System, SystemExt};
 use tokio::sync::mpsc::{self, Sender};
@@ -34,9 +34,13 @@ async fn main() {
         let alias = args.alias.clone();
 
         // get websocket stream
-        let (ws_stream, _) = tokio_tungstenite::connect_async(&args.server)
-            .await
-            .unwrap();
+        let (ws_stream, _) = match tokio_tungstenite::connect_async(&args.server).await {
+            Ok((a, b)) => (a, b),
+            Err(_) => {
+                tokio::time::sleep(RETRY).await;
+                continue;
+            }
+        };
         // split websocket stream so we can have both directions working independently
         let (sender, mut receiver) = ws_stream.split();
 
@@ -55,10 +59,21 @@ async fn main() {
                     let os_version = sys.long_os_version().unwrap_or("".into());
                     let uptime = sys.uptime().to_string();
 
+                    // u32, sqlx on server side cant parse u64
+                    let free_mem = (sys.free_memory() / 1024) as u32;
+                    let av_mem = (sys.available_memory() / 1024) as u32;
+                    let total_mem = (sys.total_memory() / 1024) as u32;
+                    let used_mem = (sys.used_memory() / 1024) as u32;
+
                     let _send = sink.feed(Message::Text(format!("uuid:{id}"))).await;
                     let _send = sink.feed(Message::Text(format!("alias:{alias}"))).await;
                     let _send = sink.feed(Message::Text(format!("os:{os_version}"))).await;
                     let _send = sink.feed(Message::Text(format!("uptime:{uptime}"))).await;
+                    let _send = sink
+                        .feed(Message::Text(format!(
+                            "memory:{used_mem}/{free_mem}/{av_mem}/{total_mem}"
+                        )))
+                        .await;
                     let _flush = sink.flush().await;
                 }
                 // dont go crazy, sleep for a while after checking for data/sending data
