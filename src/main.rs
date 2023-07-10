@@ -1,7 +1,6 @@
 use clap::Parser;
 use futures_util::stream::SplitSink;
 use futures_util::{future::join_all, SinkExt, StreamExt};
-use log::{debug, error, info};
 use std::time::Duration;
 use std::{ops::ControlFlow, sync::Arc};
 use sysinfo::{System, SystemExt};
@@ -12,7 +11,8 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
-
+use tracing::{debug, info, error};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -28,7 +28,14 @@ type SenderSinkArc = Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStrea
 
 #[tokio::main]
 async fn main() {
-    env_logger::init();
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info".into()),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
     info!("Starting unpatched agent...");
     let agent_id = Uuid::new_v4().to_string();
     // Dont die on connection loss
@@ -64,7 +71,7 @@ async fn main() {
         // all things outgoing
         let _sender_handle = tokio::spawn(async move {
             // start off easy
-            let _ping = sink_message(&arc_sink, Message::Ping("Hello, Server!".into())).await;
+            let _ping = sink_message(&arc_sink, Message::Ping(alias.clone().into())).await;
             info!("Connection established and validated via ping message");
             loop {
                 if let Some(_data_trigger) = rx.recv().await {
