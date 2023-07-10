@@ -57,13 +57,16 @@ async fn main() {
                     let mut sys = System::new_all();
                     sys.refresh_all();
                     let os_version = sys.long_os_version().unwrap_or("".into());
-                    let uptime = sys.uptime().to_string();
+                    let uptime = sys.uptime();
+
+                    let svc = systemctl::list_units(None, None);
+                    println!("{:?}", svc);
 
                     // u32, sqlx on server side cant parse u64
-                    let free_mem = (sys.free_memory() / 1024) as u32;
-                    let av_mem = (sys.available_memory() / 1024) as u32;
-                    let total_mem = (sys.total_memory() / 1024) as u32;
-                    let used_mem = (sys.used_memory() / 1024) as u32;
+                    let free_mem = sys.free_memory();
+                    let av_mem = sys.available_memory();
+                    let total_mem = sys.total_memory();
+                    let used_mem = sys.used_memory();
 
                     let _send = sink.feed(Message::Text(format!("uuid:{id}"))).await;
                     let _send = sink.feed(Message::Text(format!("alias:{alias}"))).await;

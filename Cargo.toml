@@ -13,6 +13,7 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 headers = "0.3"
 once_cell = "1.18.0"
 sysinfo = "0.29"
+systemctl = "0.1.9"
 tokio = { version = "1.0", features = ["full"] }
 tokio-tungstenite = "0.19"
 tower = { version = "0.4", features = ["util"] }
