@@ -1,5 +1,7 @@
 # Monitoring Agent
 
+[![codecov](https://codecov.io/gh/apimeister/unpatched-agent/branch/main/graph/badge.svg?token=98HDNPU1IZ)](https://codecov.io/gh/apimeister/unpatched-agent)
+
 ## usage
 
 ```shell
