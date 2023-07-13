@@ -6,7 +6,6 @@ publish = false
 authors = ["Alexander Kunde<alexander@apimeister.com>", "Jens Walter<jens@apimeister.com>"]
 
 [dependencies]
-axum = { version = "0.6", features = ["ws"] }
 clap = { version = "4", features = ["derive"] }
 futures = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
