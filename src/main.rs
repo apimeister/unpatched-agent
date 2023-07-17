@@ -79,9 +79,15 @@ async fn main() {
                     let os_version = sys.long_os_version().unwrap_or("".into());
                     let uptime = sys.uptime();
 
-                    let svc = systemctl::list_units(None, None);
-                    debug!("{:?}", svc);
-
+                    let units = systemctl::list_units_full(None, None, None).unwrap();
+                    let units_str: String = units.iter().fold("".into(), |acc, x| {
+                        let vp = match x.vendor_preset {
+                            Some(true) => "enabled",
+                            Some(false) => "disabled",
+                            _ => "Not available",
+                        };
+                        format!("{}unit:{}/{}/{}\n", acc, x.unit_file, x.state, vp)
+                    });
                     // u32, sqlx on server side cant parse u64
                     let free_mem = sys.free_memory();
                     let av_mem = sys.available_memory();
@@ -99,6 +105,7 @@ async fn main() {
                                 "memory:{used_mem}/{free_mem}/{av_mem}/{total_mem}"
                             )),
                         ),
+                        sink_message(&arc_sink, Message::Text(units_str)),
                     ];
                     let _m_res = join_all(messages).await;
                     let clone_arc_sink = Arc::clone(&arc_sink);
