@@ -2,7 +2,6 @@ use clap::Parser;
 use futures_util::stream::SplitSink;
 use futures_util::{future::join_all, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tracing_subscriber::{fmt, EnvFilter, registry};
 use std::time::Duration;
 use std::{ops::ControlFlow, sync::Arc};
 use sysinfo::{System, SystemExt};
@@ -14,6 +13,7 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info};
+use tracing_subscriber::{fmt, registry, EnvFilter};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 #[derive(Parser, Debug)]
@@ -40,9 +40,7 @@ type SenderSinkArc = Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStrea
 #[tokio::main]
 async fn main() {
     registry()
-        .with(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .with(fmt::layer())
         .init();
 
