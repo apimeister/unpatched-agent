@@ -1,9 +1,12 @@
 use clap::Parser;
 use futures_util::stream::SplitSink;
 use futures_util::{future::join_all, SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+use tracing_subscriber::{fmt, EnvFilter, registry};
 use std::time::Duration;
 use std::{ops::ControlFlow, sync::Arc};
 use sysinfo::{System, SystemExt};
+use systemctl::Unit;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::sync::Mutex;
@@ -22,17 +25,25 @@ struct Args {
     alias: String,
 }
 
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+struct AgentDataMemory {
+    used_mem: u64,
+    free_mem: u64,
+    av_mem: u64,
+    total_mem: u64,
+}
+
 const RETRY: Duration = Duration::new(5, 0);
 
 type SenderSinkArc = Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
+    registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
-        .with(tracing_subscriber::fmt::layer())
+        .with(fmt::layer())
         .init();
 
     info!("Starting unpatched agent...");
@@ -79,20 +90,25 @@ async fn main() {
                     let os_version = sys.long_os_version().unwrap_or("".into());
                     let uptime = sys.uptime();
 
-                    let units = systemctl::list_units_full(None, None, None).unwrap();
-                    let units_str: String = units.iter().fold("".into(), |acc, x| {
-                        let vp = match x.vendor_preset {
-                            Some(true) => "enabled",
-                            Some(false) => "disabled",
-                            _ => "Not available",
-                        };
-                        format!("{}unit:{}/{}/{}\n", acc, x.unit_file, x.state, vp)
-                    });
-                    // u32, sqlx on server side cant parse u64
-                    let free_mem = sys.free_memory();
-                    let av_mem = sys.available_memory();
-                    let total_mem = sys.total_memory();
-                    let used_mem = sys.used_memory();
+                    let units = systemctl::list_units(None, None, None).unwrap();
+                    let full_units: Vec<Unit> = units
+                        .iter()
+                        .map(|u| match Unit::from_systemctl(u) {
+                            Ok(un) => un,
+                            Err(e) => Unit {
+                                name: u.clone(),
+                                description: Some(format!("Error: {e}")),
+                                ..Default::default()
+                            },
+                        })
+                        .collect();
+
+                    let mem = AgentDataMemory {
+                        used_mem: sys.used_memory(),
+                        free_mem: sys.free_memory(),
+                        av_mem: sys.available_memory(),
+                        total_mem: sys.total_memory(),
+                    };
 
                     let messages = vec![
                         sink_message(&arc_sink, Message::Text(format!("uuid:{id}"))),
@@ -102,10 +118,17 @@ async fn main() {
                         sink_message(
                             &arc_sink,
                             Message::Text(format!(
-                                "memory:{used_mem}/{free_mem}/{av_mem}/{total_mem}"
+                                "memory:{}",
+                                serde_json::to_string(&mem).unwrap()
                             )),
                         ),
-                        sink_message(&arc_sink, Message::Text(units_str)),
+                        sink_message(
+                            &arc_sink,
+                            Message::Text(format!(
+                                "units:{}",
+                                serde_json::to_string(&full_units).unwrap()
+                            )),
+                        ),
                     ];
                     let _m_res = join_all(messages).await;
                     let clone_arc_sink = Arc::clone(&arc_sink);
