@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, registry, EnvFilter};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
@@ -45,7 +45,16 @@ async fn main() {
         .init();
 
     info!("Starting unpatched agent...");
-    let agent_id = Uuid::new_v4().to_string();
+
+    let agent_id = std::fs::read_to_string("agent_id").unwrap_or_else(|_| {
+        let new_uuid = Uuid::new_v4().to_string();
+        if let Err(e) = std::fs::write("agent_id", &new_uuid) {
+            warn!("Agent ID could not be saved on filesystem, agent will get a new ID each restart. Enable debug log for more info");
+            debug!("{:?}", e);
+        };
+        new_uuid
+    });
+
     // Dont die on connection loss
     let args = Args::parse();
     let who = 0;
