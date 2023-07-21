@@ -2,7 +2,6 @@ use clap::Parser;
 use futures_util::stream::SplitSink;
 use futures_util::{future::join_all, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use upt::Vendor;
 use std::time::Duration;
 use std::{ops::ControlFlow, sync::Arc};
 use sysinfo::{System, SystemExt};
