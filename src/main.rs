@@ -96,7 +96,7 @@ async fn main() {
                     sys.refresh_all();
                     let os_version = sys.long_os_version().unwrap_or("".into());
                     let uptime = sys.uptime();
-                    let units = systemctl::list_units(None, None, None).unwrap_or("".to_string());
+                    let units = systemctl::list_units(None, None, None).unwrap_or(vec!["".into()]);
                     let full_units: Vec<Unit> = units
                         .iter()
                         .map(|u| match Unit::from_systemctl(u) {
