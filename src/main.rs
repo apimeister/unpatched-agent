@@ -2,6 +2,7 @@ use clap::Parser;
 use futures_util::stream::SplitSink;
 use futures_util::{future::join_all, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use upt::Vendor;
 use std::time::Duration;
 use std::{ops::ControlFlow, sync::Arc};
 use sysinfo::{System, SystemExt};
@@ -96,8 +97,7 @@ async fn main() {
                     sys.refresh_all();
                     let os_version = sys.long_os_version().unwrap_or("".into());
                     let uptime = sys.uptime();
-
-                    let units = systemctl::list_units(None, None, None).unwrap();
+                    let units = systemctl::list_units(None, None, None).unwrap_or("".to_string());
                     let full_units: Vec<Unit> = units
                         .iter()
                         .map(|u| match Unit::from_systemctl(u) {
