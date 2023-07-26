@@ -911,8 +911,9 @@ dependencies = [
 
 [[package]]
 name = "systemctl"
-version = "0.2.0"
-source = "git+https://github.com/alexkunde/systemctl.git?branch=serde#36bfaec409961dcf2924af84d194e3bfb8130203"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5020a4f8f7435cd8f2af59657ea72740b59defe892ce98dc7fc413632a5cbcd"
 dependencies = [
  "itertools",
  "serde",
