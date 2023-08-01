@@ -1,21 +1,24 @@
 use clap::Parser;
+use duration_str::parse;
 use futures_util::stream::SplitSink;
 use futures_util::{future::join_all, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::process::Stdio;
 use std::time::Duration;
 use std::{ops::ControlFlow, sync::Arc};
 use sysinfo::{System, SystemExt};
-use systemctl::Unit;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{self, Sender};
-use tokio::sync::Mutex;
-use tokio_tungstenite::tungstenite::protocol::Message;
-use tokio_tungstenite::tungstenite::Error;
+use tokio::sync::{
+    mpsc::{self, Sender},
+    Mutex,
+};
+use tokio_tungstenite::tungstenite::{protocol::Message, Error};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, registry, EnvFilter};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -50,7 +53,7 @@ async fn main() {
         let new_uuid = Uuid::new_v4().to_string();
         if let Err(e) = std::fs::write("agent_id", &new_uuid) {
             warn!("Agent ID could not be saved on filesystem, agent will get a new ID each restart. Enable debug log for more info");
-            debug!("{:?}", e);
+            warn!("{:?}", e);
         };
         new_uuid
     });
@@ -92,22 +95,34 @@ async fn main() {
             info!("Connection established and validated via ping message");
             loop {
                 if let Some(_data_trigger) = rx.recv().await {
+                    let dur = match parse("1s") {
+                        Ok(d) => {
+                            debug!("Executing Script with duration: {d:?}");
+                            d
+                        }
+                        Err(e) => {
+                            error!("Could not parse timeout: {e}");
+                            Duration::new(0, 1)
+                        } // TODO: Return error to server
+                    };
+                    // TODO: Remove hardcoded script
+                    let script_id = "1234";
+                    let exec_result =
+                        exec_command("echo \"test message und so\"".into(), dur).await;
+                    let exec_result_str = match exec_result {
+                        Ok(s) => {
+                            debug!("Script response:\n{s}");
+                            s
+                        }
+                        Err(e) => {
+                            error!("{e}");
+                            format!("{e}")
+                        }
+                    };
                     let mut sys = System::new_all();
                     sys.refresh_all();
                     let os_version = sys.long_os_version().unwrap_or("".into());
                     let uptime = sys.uptime();
-                    let units = systemctl::list_units(None, None, None).unwrap_or(vec!["".into()]);
-                    let full_units: Vec<Unit> = units
-                        .iter()
-                        .map(|u| match Unit::from_systemctl(u) {
-                            Ok(un) => un,
-                            Err(e) => Unit {
-                                name: u.clone(),
-                                description: Some(format!("Error: {e}")),
-                                ..Default::default()
-                            },
-                        })
-                        .collect();
 
                     let mem = AgentDataMemory {
                         used_mem: sys.used_memory(),
@@ -117,8 +132,13 @@ async fn main() {
                     };
 
                     let messages = vec![
-                        sink_message(&arc_sink, Message::Text(format!("uuid:{id}"))),
+                        sink_message(&arc_sink, Message::Text(format!("id:{id}"))),
+                        sink_message(
+                            &arc_sink,
+                            Message::Text(format!("script_{script_id}:{exec_result_str}")),
+                        ),
                         sink_message(&arc_sink, Message::Text(format!("alias:{alias}"))),
+                        sink_message(&arc_sink, Message::Text("attributes:hello,world".into())),
                         sink_message(&arc_sink, Message::Text(format!("os:{os_version}"))),
                         sink_message(&arc_sink, Message::Text(format!("uptime:{uptime}"))),
                         sink_message(
@@ -126,13 +146,6 @@ async fn main() {
                             Message::Text(format!(
                                 "memory:{}",
                                 serde_json::to_string(&mem).unwrap()
-                            )),
-                        ),
-                        sink_message(
-                            &arc_sink,
-                            Message::Text(format!(
-                                "units:{}",
-                                serde_json::to_string(&full_units).unwrap()
                             )),
                         ),
                     ];
@@ -216,4 +229,58 @@ fn process_message(msg: Message, who: usize, tx: Sender<bool>) -> ControlFlow<()
         }
     }
     ControlFlow::Continue(())
+}
+
+async fn exec_command(cmd: String, timeout: Duration) -> std::io::Result<String> {
+    let spawn = tokio::process::Command::new("timeout")
+        .arg(format!("{}", timeout.as_secs()))
+        .args(["sh", "-c", cmd.as_str()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let output = spawn.wait_with_output().await?;
+    let code = match output.status.code() {
+        Some(code) => code,
+        None => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "Process terminated by signal",
+            ))
+        }
+    };
+    match code {
+        0 => match std::str::from_utf8(&output.stdout) {
+            Ok(s) => Ok(s.to_string()),
+            Err(e) => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("stderr was not valid utf-8: {e}"),
+            )),
+        },
+        124 => {
+            error!("Executing Process was killed by timeout ({:?})!", timeout);
+            let res = match std::str::from_utf8(&output.stdout) {
+                Ok(s) => s.to_string(),
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("stderr was not valid utf-8: {e}"),
+                    ))
+                }
+            };
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("Script timed out - Partial exec log:\n{res}"),
+            ))
+        }
+        _ => {
+            error!("Executing Process resulted in error code {}!", code);
+            match std::str::from_utf8(&output.stderr) {
+                Ok(s) => Ok(s.to_string()),
+                Err(e) => Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("stderr was not valid utf-8: {e}"),
+                )),
+            }
+        }
+    }
 }
