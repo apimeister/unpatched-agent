@@ -9,7 +9,7 @@ use std::{ops::ControlFlow, sync::Arc};
 use sysinfo::{System, SystemExt};
 use tokio::net::TcpStream;
 use tokio::sync::{
-    mpsc::{self, Sender},
+    mpsc::{self},
     Mutex,
 };
 use tokio_tungstenite::tungstenite::{protocol::Message, Error};
@@ -102,9 +102,11 @@ async fn main() {
         // ##################
         // ALL THE SEND STUFF
         // ##################
+        let sender_clone_arc_sink = Arc::clone(&arc_sink);
         let _sender_handle = tokio::spawn(async move {
             // start off easy
-            let _ping = sink_message(&arc_sink, Message::Ping(alias.clone().into())).await;
+            let _ping =
+                sink_message(&sender_clone_arc_sink, Message::Ping(alias.clone().into())).await;
             info!("Connection established and validated via ping message");
             loop {
                 if let Some(_data_trigger) = rx.recv().await {
@@ -121,13 +123,25 @@ async fn main() {
                     };
 
                     let messages = vec![
-                        sink_message(&arc_sink, Message::Text(format!("id:{id}"))),
-                        sink_message(&arc_sink, Message::Text(format!("alias:{alias}"))),
-                        sink_message(&arc_sink, Message::Text("attributes:hello,world".into())),
-                        sink_message(&arc_sink, Message::Text(format!("os:{os_version}"))),
-                        sink_message(&arc_sink, Message::Text(format!("uptime:{uptime}"))),
+                        sink_message(&sender_clone_arc_sink, Message::Text(format!("id:{id}"))),
                         sink_message(
-                            &arc_sink,
+                            &sender_clone_arc_sink,
+                            Message::Text(format!("alias:{alias}")),
+                        ),
+                        sink_message(
+                            &sender_clone_arc_sink,
+                            Message::Text("attributes:hello,world".into()),
+                        ),
+                        sink_message(
+                            &sender_clone_arc_sink,
+                            Message::Text(format!("os:{os_version}")),
+                        ),
+                        sink_message(
+                            &sender_clone_arc_sink,
+                            Message::Text(format!("uptime:{uptime}")),
+                        ),
+                        sink_message(
+                            &sender_clone_arc_sink,
                             Message::Text(format!(
                                 "memory:{}",
                                 serde_json::to_string(&mem).unwrap()
@@ -135,9 +149,8 @@ async fn main() {
                         ),
                     ];
                     let _m_res = join_all(messages).await;
-                    let clone_arc_sink = Arc::clone(&arc_sink);
                     debug!("flushing...");
-                    let _flush = clone_arc_sink.lock().await.flush().await;
+                    let _flush = sender_clone_arc_sink.lock().await.flush().await;
                 }
                 // dont go crazy, sleep for a while after checking for data/sending data
                 tokio::time::sleep(RETRY).await;
@@ -147,10 +160,14 @@ async fn main() {
         // #####################
         // ALL THE RECEIVE STUFF
         // #####################
+        let recv_clone_arc_sink = Arc::clone(&arc_sink);
         let recv_handle = tokio::spawn(async move {
             while let Some(Ok(msg)) = receiver.next().await {
                 // print message and break if instructed to do so
-                if process_message(msg, who, tx.clone()).await.is_break() {
+                if process_message(msg, who, &recv_clone_arc_sink)
+                    .await
+                    .is_break()
+                {
                     debug!("we are breaking!");
                     break;
                 }
@@ -178,7 +195,11 @@ async fn sink_message(arc: &SenderSinkArc, m: Message) -> Result<(), Error> {
 
 /// Function to handle messages we get (with a slight twist that Frame variant is visible
 /// since we are working with the underlying tungstenite library directly without axum here).
-async fn process_message(msg: Message, who: usize, tx: Sender<bool>) -> ControlFlow<(), ()> {
+async fn process_message(
+    msg: Message,
+    who: usize,
+    arc_sink: &SenderSinkArc,
+) -> ControlFlow<(), ()> {
     match msg {
         Message::Text(raw_msg) => {
             debug!(">>> got str: {:?}", raw_msg);
@@ -236,9 +257,7 @@ async fn process_message(msg: Message, who: usize, tx: Sender<bool>) -> ControlF
         // v according to spec. But if you need the contents of the pings you can see them here.
         Message::Ping(v) => {
             debug!(">>> {} got ping with {:?}", who, v);
-            tokio::spawn(async move {
-                tx.send(true).await.unwrap();
-            });
+            let _pong = sink_message(arc_sink, Message::Pong("pong".into())).await;
         }
 
         Message::Frame(_) => {
