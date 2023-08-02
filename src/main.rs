@@ -6,12 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use std::time::Duration;
 use std::{ops::ControlFlow, sync::Arc};
-use sysinfo::{System, SystemExt};
 use tokio::net::TcpStream;
-use tokio::sync::{
-    mpsc::{self},
-    Mutex,
-};
+use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::{protocol::Message, Error};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info, warn};
@@ -74,10 +70,6 @@ async fn main() {
     let who = 0;
 
     loop {
-        // create new channel to trigger data send everytime we restart the client
-        // with mpsc we only every allow one receiver
-        let (tx, mut rx) = mpsc::channel::<bool>(8);
-
         let id = agent_id.clone();
         let alias = args.alias.clone();
 
@@ -96,62 +88,36 @@ async fn main() {
         // split websocket stream so we can have both directions working independently
         let (sender, mut receiver) = ws_stream.split();
         let arc_sink = Arc::new(Mutex::new(sender));
-        // trigger first data send via mpsc channel
-        let _tx_send = tx.send(true).await;
 
         // ##################
         // ALL THE SEND STUFF
         // ##################
         let sender_clone_arc_sink = Arc::clone(&arc_sink);
         let _sender_handle = tokio::spawn(async move {
-            // start off easy
-            let _ping =
-                sink_message(&sender_clone_arc_sink, Message::Ping(alias.clone().into())).await;
-            info!("Connection established and validated via ping message");
+            let messages = vec![
+                sink_message(&sender_clone_arc_sink, Message::Text(format!("id:{id}"))),
+                sink_message(
+                    &sender_clone_arc_sink,
+                    Message::Text(format!("alias:{alias}")),
+                ),
+                sink_message(
+                    &sender_clone_arc_sink,
+                    Message::Text("attributes:hello,world".into()),
+                ),
+            ];
+            let _m_res = join_all(messages).await;
+            debug!("sending init values");
+            if let Err(e) = sender_clone_arc_sink.lock().await.flush().await {
+                error!("Unable to send init values to unpatched server\n{e}");
+            };
+
             loop {
-                if let Some(_data_trigger) = rx.recv().await {
-                    let mut sys = System::new_all();
-                    sys.refresh_all();
-                    let os_version = sys.long_os_version().unwrap_or("".into());
-                    let uptime = sys.uptime();
-
-                    let mem = AgentDataMemory {
-                        used_mem: sys.used_memory(),
-                        free_mem: sys.free_memory(),
-                        av_mem: sys.available_memory(),
-                        total_mem: sys.total_memory(),
-                    };
-
-                    let messages = vec![
-                        sink_message(&sender_clone_arc_sink, Message::Text(format!("id:{id}"))),
-                        sink_message(
-                            &sender_clone_arc_sink,
-                            Message::Text(format!("alias:{alias}")),
-                        ),
-                        sink_message(
-                            &sender_clone_arc_sink,
-                            Message::Text("attributes:hello,world".into()),
-                        ),
-                        sink_message(
-                            &sender_clone_arc_sink,
-                            Message::Text(format!("os:{os_version}")),
-                        ),
-                        sink_message(
-                            &sender_clone_arc_sink,
-                            Message::Text(format!("uptime:{uptime}")),
-                        ),
-                        sink_message(
-                            &sender_clone_arc_sink,
-                            Message::Text(format!(
-                                "memory:{}",
-                                serde_json::to_string(&mem).unwrap()
-                            )),
-                        ),
-                    ];
-                    let _m_res = join_all(messages).await;
-                    debug!("flushing...");
-                    let _flush = sender_clone_arc_sink.lock().await.flush().await;
-                }
+                let _ping =
+                    sink_message(&sender_clone_arc_sink, Message::Ping(alias.clone().into())).await;
+                debug!("sending values");
+                if let Err(e) = sender_clone_arc_sink.lock().await.flush().await {
+                    error!("Unable to send values to unpatched server\n{e}");
+                };
                 // dont go crazy, sleep for a while after checking for data/sending data
                 tokio::time::sleep(RETRY).await;
             }
@@ -189,7 +155,7 @@ async fn main() {
 /// either via .close() or .flush()
 async fn sink_message(arc: &SenderSinkArc, m: Message) -> Result<(), Error> {
     let mut x = arc.lock().await;
-    debug!("feeding sink_message {:?}", m);
+    debug!("feeding sink: {:?}", m);
     x.feed(m).await
 }
 
@@ -208,18 +174,9 @@ async fn process_message(
                 "script" => {
                     let script: Script = serde_json::from_str(msg).unwrap();
                     debug!("{:?}", script);
-                    let timeout_duration = match parse(&script.timeout) {
-                        Ok(d) => {
-                            debug!("Executing Script with duration: {d:?}");
-                            d
-                        }
-                        Err(e) => {
-                            // TODO: Return error to server
-                            warn!("Could not parse timeout: {e}, defaulting to 30s");
-                            Duration::new(30, 0)
-                        }
-                    };
-                    let exec_result = exec_command(script.script_content, timeout_duration).await;
+
+                    let exec_result =
+                        exec_command(script.script_content, duration(&script.timeout)).await;
                     let _exec_result_str = match exec_result {
                         Ok(s) => {
                             debug!("Script response:\n{s}");
@@ -249,12 +206,13 @@ async fn process_message(
             return ControlFlow::Break(());
         }
 
+        // Heartbeat from Server
         Message::Pong(v) => {
             debug!(">>> {} got pong with {:?}", who, v);
+            info!("Connection established to host: {who}");
         }
-        // Just as with axum server, the underlying tungstenite websocket library
-        // will handle Ping for you automagically by replying with Pong and copying the
-        // v according to spec. But if you need the contents of the pings you can see them here.
+
+        // Heartbeat test from Server to check if agent is alive
         Message::Ping(v) => {
             debug!(">>> {} got ping with {:?}", who, v);
             let _pong = sink_message(arc_sink, Message::Pong("pong".into())).await;
@@ -318,6 +276,20 @@ async fn exec_command(cmd: String, timeout: Duration) -> std::io::Result<String>
                     format!("stderr was not valid utf-8: {e}"),
                 )),
             }
+        }
+    }
+}
+
+fn duration(timeout: &str) -> Duration {
+    match parse(timeout) {
+        Ok(d) => {
+            debug!("Executing Script with duration: {d:?}");
+            d
+        }
+        Err(e) => {
+            // TODO: Return error to server
+            warn!("Could not parse timeout: {e}, defaulting to 30s");
+            Duration::new(30, 0)
         }
     }
 }
