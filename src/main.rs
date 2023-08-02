@@ -65,10 +65,9 @@ async fn main() {
         new_uuid
     });
 
-    // Dont die on connection loss
     let args = Args::parse();
-    let who = 0;
 
+    // Dont die on connection loss
     loop {
         let id = agent_id.clone();
         let alias = args.alias.clone();
@@ -78,7 +77,8 @@ async fn main() {
             Ok((a, b)) => (a, b),
             Err(_) => {
                 error!(
-                    "Websocket connection could not be established, retrying in {} seconds",
+                    "Websocket connection to {} could not be established, retrying in {} seconds",
+                    &args.server,
                     RETRY.as_secs()
                 );
                 tokio::time::sleep(RETRY).await;
@@ -88,36 +88,30 @@ async fn main() {
         // split websocket stream so we can have both directions working independently
         let (sender, mut receiver) = ws_stream.split();
         let arc_sink = Arc::new(Mutex::new(sender));
+        info!("Connection established to host: {}", &args.server);
 
         // ##################
         // ALL THE SEND STUFF
         // ##################
-        let sender_clone_arc_sink = Arc::clone(&arc_sink);
+        let sender_arc_sink = Arc::clone(&arc_sink);
         let _sender_handle = tokio::spawn(async move {
             let messages = vec![
-                sink_message(&sender_clone_arc_sink, Message::Text(format!("id:{id}"))),
+                sink_message(&sender_arc_sink, Message::Text(format!("id:{id}"))),
+                sink_message(&sender_arc_sink, Message::Text(format!("alias:{alias}"))),
                 sink_message(
-                    &sender_clone_arc_sink,
-                    Message::Text(format!("alias:{alias}")),
-                ),
-                sink_message(
-                    &sender_clone_arc_sink,
+                    &sender_arc_sink,
                     Message::Text("attributes:hello,world".into()),
                 ),
             ];
             let _m_res = join_all(messages).await;
             debug!("sending init values");
-            if let Err(e) = sender_clone_arc_sink.lock().await.flush().await {
+            if let Err(e) = sender_arc_sink.lock().await.flush().await {
                 error!("Unable to send init values to unpatched server\n{e}");
             };
 
             loop {
                 let _ping =
-                    sink_message(&sender_clone_arc_sink, Message::Ping(alias.clone().into())).await;
-                debug!("sending values");
-                if let Err(e) = sender_clone_arc_sink.lock().await.flush().await {
-                    error!("Unable to send values to unpatched server\n{e}");
-                };
+                    send_message(&sender_arc_sink, Message::Ping("Server you there?".into())).await;
                 // dont go crazy, sleep for a while after checking for data/sending data
                 tokio::time::sleep(RETRY).await;
             }
@@ -126,14 +120,11 @@ async fn main() {
         // #####################
         // ALL THE RECEIVE STUFF
         // #####################
-        let recv_clone_arc_sink = Arc::clone(&arc_sink);
+        let recv_arc_sink = Arc::clone(&arc_sink);
         let recv_handle = tokio::spawn(async move {
             while let Some(Ok(msg)) = receiver.next().await {
                 // print message and break if instructed to do so
-                if process_message(msg, who, &recv_clone_arc_sink)
-                    .await
-                    .is_break()
-                {
+                if process_message(msg, &recv_arc_sink).await.is_break() {
                     debug!("we are breaking!");
                     break;
                 }
@@ -159,25 +150,34 @@ async fn sink_message(arc: &SenderSinkArc, m: Message) -> Result<(), Error> {
     x.feed(m).await
 }
 
+/// Get ARC to Splitsink and push message onto it and flush them
+async fn send_message(arc: &SenderSinkArc, m: Message) -> Result<(), Error> {
+    let mut x = arc.lock().await;
+    if m.is_ping() {
+        debug!("sending ping: {:?}", m.clone().into_text().unwrap());
+    } else if m.is_pong() {
+        debug!("sending pong: {:?}", m.clone().into_text().unwrap());
+    } else {
+        debug!("sending: {:?}", m);
+    }
+    x.send(m).await
+}
+
 /// Function to handle messages we get (with a slight twist that Frame variant is visible
 /// since we are working with the underlying tungstenite library directly without axum here).
-async fn process_message(
-    msg: Message,
-    who: usize,
-    arc_sink: &SenderSinkArc,
-) -> ControlFlow<(), ()> {
+async fn process_message(msg: Message, arc_sink: &SenderSinkArc) -> ControlFlow<(), ()> {
     match msg {
-        Message::Text(raw_msg) => {
-            debug!(">>> got str: {:?}", raw_msg);
-            let (message_type, msg) = raw_msg.split_once(':').unwrap();
+        Message::Text(content) => {
+            debug!("got str: {:?}", content);
+            let (message_type, msg) = content.split_once(':').unwrap();
             match message_type {
                 "script" => {
-                    let script: Script = serde_json::from_str(msg).unwrap();
+                    let mut script: Script = serde_json::from_str(msg).unwrap();
                     debug!("{:?}", script);
 
                     let exec_result =
                         exec_command(script.script_content, duration(&script.timeout)).await;
-                    let _exec_result_str = match exec_result {
+                    script.script_content = match exec_result {
                         Ok(s) => {
                             debug!("Script response:\n{s}");
                             s
@@ -187,35 +187,52 @@ async fn process_message(
                             format!("{e}")
                         }
                     };
+
+                    let json_script = match serde_json::to_string(&script) {
+                        Ok(j) => j,
+                        Err(e) => {
+                            let res = format!(
+                                "Could not transform script {} answer to json\n{e}",
+                                script.id
+                            );
+                            error!(res);
+                            res
+                        }
+                    };
+                    let _script_res =
+                        send_message(arc_sink, Message::Text(format!("script:{json_script}")))
+                            .await;
                 }
                 _ => warn!("Server sent unsupported message type {message_type}:\n{msg}"),
             }
         }
         Message::Binary(d) => {
-            debug!(">>> {} got {} bytes: {:?}", who, d.len(), d);
+            debug!("Got {} bytes: {:?}", d.len(), d);
         }
         Message::Close(c) => {
             if let Some(cf) = c {
-                debug!(
-                    ">>> {} got close with code {} and reason `{}`",
-                    who, cf.code, cf.reason
-                );
+                debug!("Got close with code {} and reason `{}`", cf.code, cf.reason);
             } else {
-                debug!(">>> {} somehow got close message without CloseFrame", who);
+                debug!("Somehow got close message without CloseFrame");
             }
             return ControlFlow::Break(());
         }
 
         // Heartbeat from Server
         Message::Pong(v) => {
-            debug!(">>> {} got pong with {:?}", who, v);
-            info!("Connection established to host: {who}");
+            debug!(
+                "Got pong with {}",
+                std::str::from_utf8(&v).unwrap_or("utf-8 error, not parsable")
+            );
         }
 
         // Heartbeat test from Server to check if agent is alive
         Message::Ping(v) => {
-            debug!(">>> {} got ping with {:?}", who, v);
-            let _pong = sink_message(arc_sink, Message::Pong("pong".into())).await;
+            debug!(
+                "Got ping with {}",
+                std::str::from_utf8(&v).unwrap_or("utf-8 error, not parsable")
+            );
+            let _pong = send_message(arc_sink, Message::Pong("still here".into())).await;
         }
 
         Message::Frame(_) => {
