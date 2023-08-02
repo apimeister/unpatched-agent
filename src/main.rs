@@ -198,8 +198,7 @@ async fn process_message(msg: Message, who: usize, tx: Sender<bool>) -> ControlF
                             Duration::new(30, 0)
                         }
                     };
-                    let exec_result =
-                        exec_command(script.script_content, timeout_duration).await;
+                    let exec_result = exec_command(script.script_content, timeout_duration).await;
                     let _exec_result_str = match exec_result {
                         Ok(s) => {
                             debug!("Script response:\n{s}");
