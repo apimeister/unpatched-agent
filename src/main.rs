@@ -24,13 +24,13 @@ struct Args {
     alias: String,
 }
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
-struct AgentDataMemory {
-    used_mem: u64,
-    free_mem: u64,
-    av_mem: u64,
-    total_mem: u64,
+// TODO: Use struct from unpatched server as a dependency
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Default)]
+struct ScriptExec {
+    pub id: String,
+    pub script: Script,
 }
+
 // TODO: Use struct from unpatched server as a dependency
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Default)]
 struct Script {
@@ -172,23 +172,23 @@ async fn process_message(msg: Message, arc_sink: &SenderSinkArc) -> ControlFlow<
             let (message_type, msg) = content.split_once(':').unwrap();
             match message_type {
                 "script" => {
-                    let mut script: Script = serde_json::from_str(msg).unwrap();
-                    debug!("{:?}", script);
-
+                    let mut script_exec: ScriptExec = serde_json::from_str(msg).unwrap();
+                    debug!("{:?}", script_exec);
+                    let script = script_exec.script.clone();
                     let exec_result =
-                        exec_command(script.script_content, duration(&script.timeout)).await;
-                    script.script_content = match exec_result {
+                        exec_command(&script.script_content, duration(&script.timeout)).await;
+                    script_exec.script.script_content = match exec_result {
                         Ok(s) => {
-                            debug!("Script response:\n{s}");
+                            debug!("Script {} response:\n{s}", script.name);
                             s
                         }
                         Err(e) => {
-                            error!("{e}");
+                            warn!("Script {} response:\n{e}", script.name);
                             format!("{e}")
                         }
                     };
 
-                    let json_script = match serde_json::to_string(&script) {
+                    let json_script = match serde_json::to_string(&script_exec) {
                         Ok(j) => j,
                         Err(e) => {
                             let res = format!(
@@ -242,10 +242,10 @@ async fn process_message(msg: Message, arc_sink: &SenderSinkArc) -> ControlFlow<
     ControlFlow::Continue(())
 }
 
-async fn exec_command(cmd: String, timeout: Duration) -> std::io::Result<String> {
+async fn exec_command(cmd: &str, timeout: Duration) -> std::io::Result<String> {
     let spawn = tokio::process::Command::new("timeout")
         .arg(format!("{}", timeout.as_secs()))
-        .args(["sh", "-c", cmd.as_str()])
+        .args(["sh", "-c", cmd])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
