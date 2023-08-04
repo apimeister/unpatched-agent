@@ -22,6 +22,8 @@ struct Args {
     server: String,
     #[arg(short, long)]
     alias: String,
+    #[arg(long, default_value = "")]
+    attributes: String,
 }
 
 // TODO: Use struct from unpatched server as a dependency
@@ -71,6 +73,7 @@ async fn main() {
     loop {
         let id = agent_id.clone();
         let alias = args.alias.clone();
+        let attr = args.attributes.clone();
 
         // get websocket stream
         let (ws_stream, _) = match tokio_tungstenite::connect_async(&args.server).await {
@@ -100,7 +103,7 @@ async fn main() {
                 sink_message(&sender_arc_sink, Message::Text(format!("alias:{alias}"))),
                 sink_message(
                     &sender_arc_sink,
-                    Message::Text("attributes:hello,world".into()),
+                    Message::Text(format!("attributes:{attr}")),
                 ),
             ];
             let _m_res = join_all(messages).await;
