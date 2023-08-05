@@ -1,7 +1,7 @@
 use clap::Parser;
 use duration_str::parse;
 use futures_util::stream::SplitSink;
-use futures_util::{future::join_all, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use std::time::Duration;
@@ -36,13 +36,22 @@ struct ScriptExec {
 // TODO: Use struct from unpatched server as a dependency
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Default)]
 struct Script {
-    id: String,
+    id: Uuid,
     name: String,
     version: String,
     output_regex: String,
-    labels: String,
+    labels: Vec<String>,
     timeout: String,
     script_content: String,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Default)]
+pub struct Host {
+    pub id: Uuid,
+    pub alias: String,
+    pub attributes: Vec<String>,
+    pub ip: String,
+    pub last_pong: String,
 }
 
 const RETRY: Duration = Duration::new(5, 0);
@@ -68,13 +77,17 @@ async fn main() {
     });
 
     let args = Args::parse();
+    let attributes: Vec<String> = args.attributes.split(',').map(|a| a.to_string()).collect();
+    let host = Host {
+        id: Uuid::parse_str(&agent_id).unwrap(),
+        alias: args.alias,
+        attributes,
+        ..Default::default()
+    };
+    let serde_host = serde_json::to_string(&host).unwrap();
 
     // Dont die on connection loss
     loop {
-        let id = agent_id.clone();
-        let alias = args.alias.clone();
-        let attr = args.attributes.clone();
-
         // get websocket stream
         let (ws_stream, _) = match tokio_tungstenite::connect_async(&args.server).await {
             Ok((a, b)) => (a, b),
@@ -97,26 +110,20 @@ async fn main() {
         // ALL THE SEND STUFF
         // ##################
         let sender_arc_sink = Arc::clone(&arc_sink);
-        let _sender_handle = tokio::spawn(async move {
-            let messages = vec![
-                sink_message(&sender_arc_sink, Message::Text(format!("id:{id}"))),
-                sink_message(&sender_arc_sink, Message::Text(format!("alias:{alias}"))),
-                sink_message(
-                    &sender_arc_sink,
-                    Message::Text(format!("attributes:{attr}")),
-                ),
-            ];
-            let _m_res = join_all(messages).await;
-            debug!("sending init values");
-            if let Err(e) = sender_arc_sink.lock().await.flush().await {
-                error!("Unable to send init values to unpatched server\n{e}");
-            };
+        let _sender_handle = tokio::spawn({
+            let host = serde_host.clone();
+            async move {
+                let host_msg = format!("host:{host}");
+                let _host_init = send_message(&sender_arc_sink, Message::Text(host_msg)).await;
+                debug!("sent {:?}", host);
 
-            loop {
-                let _ping =
-                    send_message(&sender_arc_sink, Message::Ping("Server you there?".into())).await;
-                // dont go crazy, sleep for a while after checking for data/sending data
-                tokio::time::sleep(RETRY).await;
+                loop {
+                    let _ping =
+                        send_message(&sender_arc_sink, Message::Ping("Server you there?".into()))
+                            .await;
+                    // dont go crazy, sleep for a while after checking for data/sending data
+                    tokio::time::sleep(RETRY).await;
+                }
             }
         });
 
@@ -142,15 +149,6 @@ async fn main() {
         );
         tokio::time::sleep(RETRY).await;
     }
-}
-
-/// Get ARC to Splitsink and push message onto it
-/// Will not actually flush any data, needs another send event
-/// either via .close() or .flush()
-async fn sink_message(arc: &SenderSinkArc, m: Message) -> Result<(), Error> {
-    let mut x = arc.lock().await;
-    debug!("feeding sink: {:?}", m);
-    x.feed(m).await
 }
 
 /// Get ARC to Splitsink and push message onto it and flush them

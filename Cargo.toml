@@ -14,7 +14,7 @@ tokio = { version = "1.0", features = ["full"] }
 tokio-tungstenite = "0.20"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1.4", features = [ "v4", "fast-rng", "macro-diagnostics"] }
+uuid = { version = "1.4", features = [ "v4", "fast-rng", "macro-diagnostics", "serde"] }
 duration-str = "0.5"
 
 [[bin]]
