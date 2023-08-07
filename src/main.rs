@@ -118,9 +118,15 @@ async fn main() {
                 debug!("sent {:?}", host);
 
                 loop {
-                    let _ping =
+                    let ping =
                         send_message(&sender_arc_sink, Message::Ping("Server you there?".into()))
                             .await;
+                    if let Err(e) = ping {
+                        match e {
+                            Error::AlreadyClosed => break,
+                            _ => {}
+                        }
+                    }
                     // dont go crazy, sleep for a while after checking for data/sending data
                     tokio::time::sleep(RETRY).await;
                 }
