@@ -5,5 +5,5 @@
 ## usage
 
 ```shell
-cargo run -- --server ws://127.0.0.1:3000/ws --alias monitoring-agent-1
+cargo run -- --server ws://127.0.0.1:3000/ws --alias unpatched-agent-1 [ --attributes linux,prod ]
 ```
