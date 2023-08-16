@@ -1,3 +1,5 @@
 /target
 agent_id
 lcov.info
+/self-signed-certs
+*.pem

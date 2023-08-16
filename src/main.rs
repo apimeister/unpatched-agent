@@ -2,6 +2,7 @@ use clap::Parser;
 use duration_str::parse;
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
+// use rustls::{ClientConfig, RootCertStore};
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use std::time::Duration;
@@ -15,15 +16,22 @@ use tracing_subscriber::{fmt, registry, EnvFilter};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 
+/// A bash first monitoring solution
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long)]
+    /// host:port with unpatched server running
+    #[arg(short, long, default_value = "127.0.0.1:3000")]
     server: String,
+    /// this agents name
     #[arg(short, long)]
     alias: String,
-    #[arg(long, default_value = "")]
-    attributes: String,
+    /// attributes describing the server
+    #[arg(long)]
+    attributes: Option<String>,
+    /// deactivate tls for frontend
+    #[arg(long)]
+    no_tls: bool,
 }
 
 // TODO: Use struct from unpatched server as a dependency
@@ -77,7 +85,12 @@ async fn main() {
     });
 
     let args = Args::parse();
-    let attributes: Vec<String> = args.attributes.split(',').map(|a| a.to_string()).collect();
+    let attributes: Vec<String> = args
+        .attributes
+        .unwrap_or("".into())
+        .split(',')
+        .map(|a| a.to_string())
+        .collect();
     let host = Host {
         id: Uuid::parse_str(&agent_id).unwrap(),
         alias: args.alias,
@@ -86,19 +99,52 @@ async fn main() {
     };
     let serde_host = serde_json::to_string(&host).unwrap();
 
+    // let mut roots = RootCertStore::empty();
+    // roots.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
+    //     rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
+    //         ta.subject,
+    //         ta.spki,
+    //         ta.name_constraints,
+    //     )
+    // }));
+
+    // let mut cc = ClientConfig::builder()
+    //     .with_safe_defaults()
+    //     .with_root_certificates(roots)
+    //     .with_no_client_auth();
+    // error!("{:?}", cc);
+    // // cc.dangerous()
+    // //     .set_certificate_verifier(Arc::new(InsecureServerCertVerifier));
+    // error!("{:?}", cc);
+
     // Dont die on connection loss
     loop {
-        // get websocket stream
-        let (ws_stream, _) = match tokio_tungstenite::connect_async(&args.server).await {
-            Ok((a, b)) => (a, b),
-            Err(_) => {
-                error!(
-                    "Websocket connection to {} could not be established, retrying in {} seconds",
-                    &args.server,
-                    RETRY.as_secs()
-                );
-                tokio::time::sleep(RETRY).await;
-                continue;
+        let (ws_stream, _) = if args.no_tls {
+            // get websocket stream via HTTP
+            let request = format!("ws://{}/ws", args.server);
+            match tokio_tungstenite::connect_async(&request).await {
+                Ok((a, b)) => (a, b),
+                Err(e) => {
+                    error!("http error: \n{e}");
+                    error!("Websocket connection to {request} could not be established, retrying in {} seconds", RETRY.as_secs());
+                    tokio::time::sleep(RETRY).await;
+                    continue;
+                }
+            }
+        } else {
+            // get websocket stream via HTTPS
+            let request = format!("wss://{}/ws", args.server);
+            // let config = Some(tokio_tungstenite::Connector::Rustls(Arc::new(cc.clone())));
+            match tokio_tungstenite::connect_async_tls_with_config(&request, None, false, None)
+                .await
+            {
+                Ok((a, b)) => (a, b),
+                Err(e) => {
+                    error!("https error: \n{e}");
+                    error!("Websocket connection to {request} could not be established, retrying in {} seconds", RETRY.as_secs());
+                    tokio::time::sleep(RETRY).await;
+                    continue;
+                }
             }
         };
         // split websocket stream so we can have both directions working independently
@@ -314,3 +360,34 @@ fn duration(timeout: &str) -> Duration {
         }
     }
 }
+
+// struct InsecureServerCertVerifier;
+
+// impl rustls::client::ServerCertVerifier for InsecureServerCertVerifier {
+//     fn verify_server_cert(
+//         &self,
+//         _end_entity: &rustls::Certificate,
+//         _intermediates: &[rustls::Certificate],
+//         _server_name: &rustls::ServerName,
+//         _scts: &mut dyn Iterator<Item = &[u8]>,
+//         _ocsp_response: &[u8],
+//         _now: std::time::SystemTime,
+//     ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
+//         Ok(rustls::client::ServerCertVerified::assertion())
+//     }
+// }
+
+// #[cfg(test)]
+// mod tests {
+//     use std::time::SystemTime;
+
+//     use rustls::{server::DnsName, ServerName};
+
+//     #[test]
+//     fn test_tls_import() {
+//         let mut roots = rustls::RootCertStore::empty();
+//         let c = rustls_native_certs::load_native_certs().expect("could not load platform certs");
+//         let (acc, rej) = roots.add_parsable_certificates(&c);
+//         println!("{acc}/{rej}");
+//     }
+// }
