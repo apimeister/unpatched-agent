@@ -3,3 +3,4 @@ agent_id
 lcov.info
 /self-signed-certs
 *.pem
+x_api_key

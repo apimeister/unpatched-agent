@@ -9,6 +9,8 @@ use std::time::Duration;
 use std::{ops::ControlFlow, sync::Arc};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+use tokio_tungstenite::tungstenite::handshake::client::generate_key;
+use tokio_tungstenite::tungstenite::http::Request;
 use tokio_tungstenite::tungstenite::{protocol::Message, Error};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info, warn};
@@ -58,8 +60,8 @@ pub struct Host {
     pub id: Uuid,
     pub alias: String,
     pub attributes: Vec<String>,
+    pub seed_key: Uuid,
     pub ip: String,
-    pub last_pong: String,
 }
 
 const RETRY: Duration = Duration::new(5, 0);
@@ -84,7 +86,11 @@ async fn main() {
         new_uuid
     });
 
+    // uuid for this instance of running software
+    let x_seed_key = Uuid::new_v4();
+
     let args = Args::parse();
+
     let attributes: Vec<String> = args
         .attributes
         .unwrap_or("".into())
@@ -95,9 +101,12 @@ async fn main() {
         id: Uuid::parse_str(&agent_id).unwrap(),
         alias: args.alias,
         attributes,
+        seed_key: x_seed_key,
         ..Default::default()
     };
     let serde_host = serde_json::to_string(&host).unwrap();
+
+    
 
     // let mut roots = RootCertStore::empty();
     // roots.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
@@ -119,9 +128,36 @@ async fn main() {
 
     // Dont die on connection loss
     loop {
+        // load x_api_key
+        let x_api_key = std::fs::read_to_string("x_api_key").unwrap_or_else(|_| {
+            let nil_uuid = Uuid::nil().to_string();
+            if let Err(e) = std::fs::write("x_api_key", &nil_uuid) {
+                warn!("API KEY could not be saved on filesystem, agent will get a new API KEY each restart");
+                warn!("If the agent disconnects you will need to approve data-send on server side! Enable debug log for more info ");
+                debug!("{:?}", e);
+            };
+            nil_uuid
+        });
+
+        // build request by hand
+        let mut req = Request::builder()
+            .method("GET")
+            .header("Host", &args.server)
+            .header("X_API_KEY", x_api_key)
+            .header("X_SEED_KEY", &x_seed_key.to_string())
+            .header("X_AGENT_ID", &agent_id)
+            .header("X_AGENT_ALIAS", &host.alias)
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .header("Sec-WebSocket-Version", "13")
+            .header("Sec-WebSocket-Key", generate_key())
+            .body(())
+            .unwrap();
+
         let (ws_stream, _) = if args.no_tls {
             // get websocket stream via HTTP
-            let request = format!("ws://{}/ws", args.server);
+            let request = format!("ws://{}/ws", &args.server);
+            *req.uri_mut() = request.parse().unwrap();
             match tokio_tungstenite::connect_async(&request).await {
                 Ok((a, b)) => (a, b),
                 Err(e) => {
@@ -133,11 +169,9 @@ async fn main() {
             }
         } else {
             // get websocket stream via HTTPS
-            let request = format!("wss://{}/ws", args.server);
-            // let config = Some(tokio_tungstenite::Connector::Rustls(Arc::new(cc.clone())));
-            match tokio_tungstenite::connect_async_tls_with_config(&request, None, false, None)
-                .await
-            {
+            let request = format!("wss://{}/ws", &args.server);
+            *req.uri_mut() = request.parse().unwrap();
+            match tokio_tungstenite::connect_async_tls_with_config(req, None, false, None).await {
                 Ok((a, b)) => (a, b),
                 Err(e) => {
                     error!("https error: \n{e}");
@@ -221,6 +255,22 @@ async fn process_message(msg: Message, arc_sink: &SenderSinkArc) -> ControlFlow<
             debug!("got str: {:?}", content);
             let (message_type, msg) = content.split_once(':').unwrap();
             match message_type {
+                "api_key" => {
+                    match msg.parse::<Uuid>() {
+                        Ok(api_key) => {
+                            if let Err(e) = std::fs::write("x_api_key", api_key.to_string()) {
+                                warn!("API KEY could not be saved on filesystem, agent will get a new API KEY each restart");
+                                warn!("If the agent disconnects you will need to approve data-send on server side! Enable debug log for more info ");
+                                debug!("{:?}", e);
+                            };
+                        },
+                        Err(e) => {
+                            warn!("API KEY could not be parsed, agent will not be able to connect. Enable debug log for more info");
+                            debug!("{:?}", e);
+                        }
+                    } 
+                },
+
                 "script" => {
                     let mut script_exec: ScriptExec = serde_json::from_str(msg).unwrap();
                     debug!("{:?}", script_exec);
