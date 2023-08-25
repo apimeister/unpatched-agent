@@ -15,7 +15,6 @@ tokio-tungstenite = { version = "0.20", features = ["rustls-tls-native-roots"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.4", features = [ "v4", "fast-rng", "macro-diagnostics", "serde"] }
-duration-str = "0.5"
 
 [[bin]]
 name = "unpatched-agent"

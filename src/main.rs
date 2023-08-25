@@ -1,5 +1,4 @@
 use clap::Parser;
-use duration_str::parse;
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
 // use rustls::{ClientConfig, RootCertStore};
@@ -51,7 +50,7 @@ struct Script {
     version: String,
     output_regex: String,
     labels: Vec<String>,
-    timeout: String,
+    timeout: Duration,
     script_content: String,
 }
 
@@ -105,8 +104,6 @@ async fn main() {
         ..Default::default()
     };
     let serde_host = serde_json::to_string(&host).unwrap();
-
-    
 
     // let mut roots = RootCertStore::empty();
     // roots.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
@@ -255,28 +252,25 @@ async fn process_message(msg: Message, arc_sink: &SenderSinkArc) -> ControlFlow<
             debug!("got str: {:?}", content);
             let (message_type, msg) = content.split_once(':').unwrap();
             match message_type {
-                "api_key" => {
-                    match msg.parse::<Uuid>() {
-                        Ok(api_key) => {
-                            if let Err(e) = std::fs::write("x_api_key", api_key.to_string()) {
-                                warn!("API KEY could not be saved on filesystem, agent will get a new API KEY each restart");
-                                warn!("If the agent disconnects you will need to approve data-send on server side! Enable debug log for more info ");
-                                debug!("{:?}", e);
-                            };
-                        },
-                        Err(e) => {
-                            warn!("API KEY could not be parsed, agent will not be able to connect. Enable debug log for more info");
+                "api_key" => match msg.parse::<Uuid>() {
+                    Ok(api_key) => {
+                        if let Err(e) = std::fs::write("x_api_key", api_key.to_string()) {
+                            warn!("API KEY could not be saved on filesystem, agent will get a new API KEY each restart");
+                            warn!("If the agent disconnects you will need to approve data-send on server side! Enable debug log for more info ");
                             debug!("{:?}", e);
-                        }
-                    } 
+                        };
+                    }
+                    Err(e) => {
+                        warn!("API KEY could not be parsed, agent will not be able to connect. Enable debug log for more info");
+                        debug!("{:?}", e);
+                    }
                 },
 
                 "script" => {
                     let mut script_exec: ScriptExec = serde_json::from_str(msg).unwrap();
                     debug!("{:?}", script_exec);
                     let script = script_exec.script.clone();
-                    let exec_result =
-                        exec_command(&script.script_content, duration(&script.timeout)).await;
+                    let exec_result = exec_command(&script.script_content, script.timeout).await;
                     script_exec.script.script_content = match exec_result {
                         Ok(s) => {
                             debug!("Script {} response:\n{s}", script.name);
@@ -393,20 +387,6 @@ async fn exec_command(cmd: &str, timeout: Duration) -> std::io::Result<String> {
                     format!("stderr was not valid utf-8: {e}"),
                 )),
             }
-        }
-    }
-}
-
-fn duration(timeout: &str) -> Duration {
-    match parse(timeout) {
-        Ok(d) => {
-            debug!("Executing Script with duration: {d:?}");
-            d
-        }
-        Err(e) => {
-            // TODO: Return error to server
-            warn!("Could not parse timeout: {e}, defaulting to 30s");
-            Duration::new(30, 0)
         }
     }
 }
