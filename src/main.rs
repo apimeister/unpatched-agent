@@ -8,6 +8,7 @@ use std::time::Duration;
 use std::{ops::ControlFlow, sync::Arc};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::handshake::client::generate_key;
 use tokio_tungstenite::tungstenite::http::Request;
 use tokio_tungstenite::tungstenite::{protocol::Message, Error};
@@ -270,15 +271,27 @@ async fn process_message(msg: Message, arc_sink: &SenderSinkArc) -> ControlFlow<
                     let mut script_exec: ScriptExec = serde_json::from_str(msg).unwrap();
                     debug!("{:?}", script_exec);
                     let script = script_exec.script.clone();
-                    let exec_result = exec_command(&script.script_content, script.timeout).await;
+                    let exec_result = timeout(
+                        script_exec.script.timeout,
+                        exec_command(&script.script_content),
+                    )
+                    .await;
                     script_exec.script.script_content = match exec_result {
-                        Ok(s) => {
+                        Ok(Ok(s)) => {
                             debug!("Script {} response:\n{s}", script.name);
                             s
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             warn!("Script {} response:\n{e}", script.name);
                             format!("{e}")
+                        }
+                        Err(e) => {
+                            let t = format!(
+                                "Timeout was {} seconds. {e}",
+                                script_exec.script.timeout.as_secs()
+                            );
+                            warn!("Script {} timed out response:\n{t}", script.name);
+                            t
                         }
                     };
 
@@ -336,10 +349,9 @@ async fn process_message(msg: Message, arc_sink: &SenderSinkArc) -> ControlFlow<
     ControlFlow::Continue(())
 }
 
-async fn exec_command(cmd: &str, timeout: Duration) -> std::io::Result<String> {
-    let spawn = tokio::process::Command::new("timeout")
-        .arg(format!("{}", timeout.as_secs()))
-        .args(["sh", "-c", cmd])
+async fn exec_command(cmd: &str) -> std::io::Result<String> {
+    let spawn = tokio::process::Command::new("sh")
+        .args(["-c", cmd])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
@@ -353,41 +365,18 @@ async fn exec_command(cmd: &str, timeout: Duration) -> std::io::Result<String> {
             ))
         }
     };
-    // FIXME: clean this up
-    match code {
-        0 => match std::str::from_utf8(&output.stdout) {
-            Ok(s) => Ok(s.strip_suffix('\n').unwrap_or(s).to_string()),
-            Err(e) => Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("stderr was not valid utf-8: {e}"),
-            )),
-        },
-        124 => {
-            error!("Executing Process was killed by timeout ({:?})!", timeout);
-            let res = match std::str::from_utf8(&output.stdout) {
-                Ok(s) => s.strip_suffix('\n').unwrap_or(s).to_string(),
-                Err(e) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("stderr was not valid utf-8: {e}"),
-                    ))
-                }
-            };
-            Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("Script timed out - Partial exec log:\n{res}"),
-            ))
-        }
-        _ => {
-            error!("Executing Process resulted in error code {}!", code);
-            match std::str::from_utf8(&output.stderr) {
-                Ok(s) => Ok(s.strip_suffix('\n').unwrap_or(s).to_string()),
-                Err(e) => Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("stderr was not valid utf-8: {e}"),
-                )),
-            }
-        }
+    let out = if code != 0 {
+        error!("Executing Process resulted in error code {}!", code);
+        &output.stderr
+    } else {
+        &output.stdout
+    };
+    match std::str::from_utf8(out) {
+        Ok(s) => Ok(s.strip_suffix('\n').unwrap_or(s).to_string()),
+        Err(e) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("stderr was not valid utf-8: {e}"),
+        )),
     }
 }
 
