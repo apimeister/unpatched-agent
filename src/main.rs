@@ -28,6 +28,9 @@ struct Args {
     /// this agents name
     #[arg(short, long)]
     alias: String,
+    /// this agents id (get from server)
+    #[arg(long)]
+    id: Uuid,
     /// attributes describing the server
     #[arg(long)]
     attributes: Option<String>,
@@ -60,8 +63,6 @@ pub struct Host {
     pub id: Uuid,
     pub alias: String,
     pub attributes: Vec<String>,
-    pub seed_key: Uuid,
-    pub ip: String,
 }
 
 const RETRY: Duration = Duration::new(5, 0);
@@ -76,19 +77,6 @@ async fn main() {
         .init();
 
     info!("Starting unpatched agent...");
-
-    let agent_id = std::fs::read_to_string("agent_id").unwrap_or_else(|_| {
-        let new_uuid = Uuid::new_v4().to_string();
-        if let Err(e) = std::fs::write("agent_id", &new_uuid) {
-            warn!("Agent ID could not be saved on filesystem, agent will get a new ID each restart. Enable debug log for more info");
-            warn!("{:?}", e);
-        };
-        new_uuid
-    });
-
-    // uuid for this instance of running software
-    let x_seed_key = Uuid::new_v4();
-
     let args = Args::parse();
 
     let attributes: Vec<String> = args
@@ -98,53 +86,19 @@ async fn main() {
         .map(|a| a.to_string())
         .collect();
     let host = Host {
-        id: Uuid::parse_str(&agent_id).unwrap(),
+        id: Uuid::parse_str(&args.id.to_string()).unwrap(),
         alias: args.alias,
         attributes,
-        seed_key: x_seed_key,
-        ..Default::default()
     };
     let serde_host = serde_json::to_string(&host).unwrap();
 
-    // let mut roots = RootCertStore::empty();
-    // roots.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-    //     rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
-    //         ta.subject,
-    //         ta.spki,
-    //         ta.name_constraints,
-    //     )
-    // }));
-
-    // let mut cc = ClientConfig::builder()
-    //     .with_safe_defaults()
-    //     .with_root_certificates(roots)
-    //     .with_no_client_auth();
-    // error!("{:?}", cc);
-    // // cc.dangerous()
-    // //     .set_certificate_verifier(Arc::new(InsecureServerCertVerifier));
-    // error!("{:?}", cc);
-
     // Dont die on connection loss
     loop {
-        // load x_api_key
-        let x_api_key = std::fs::read_to_string("x_api_key").unwrap_or_else(|_| {
-            let nil_uuid = Uuid::nil().to_string();
-            if let Err(e) = std::fs::write("x_api_key", &nil_uuid) {
-                warn!("API KEY could not be saved on filesystem, agent will get a new API KEY each restart");
-                warn!("If the agent disconnects you will need to approve data-send on server side! Enable debug log for more info ");
-                debug!("{:?}", e);
-            };
-            nil_uuid
-        });
-
         // build request by hand
         let mut req = Request::builder()
             .method("GET")
             .header("Host", &args.server)
-            .header("X_API_KEY", x_api_key)
-            .header("X_SEED_KEY", &x_seed_key.to_string())
-            .header("X_AGENT_ID", &agent_id)
-            .header("X_AGENT_ALIAS", &host.alias)
+            .header("X_API_KEY", &args.id.to_string())
             .header("Connection", "Upgrade")
             .header("Upgrade", "websocket")
             .header("Sec-WebSocket-Version", "13")
@@ -253,20 +207,6 @@ async fn process_message(msg: Message, arc_sink: &SenderSinkArc) -> ControlFlow<
             debug!("got str: {:?}", content);
             let (message_type, msg) = content.split_once(':').unwrap();
             match message_type {
-                "api_key" => match msg.parse::<Uuid>() {
-                    Ok(api_key) => {
-                        if let Err(e) = std::fs::write("x_api_key", api_key.to_string()) {
-                            warn!("API KEY could not be saved on filesystem, agent will get a new API KEY each restart");
-                            warn!("If the agent disconnects you will need to approve data-send on server side! Enable debug log for more info ");
-                            debug!("{:?}", e);
-                        };
-                    }
-                    Err(e) => {
-                        warn!("API KEY could not be parsed, agent will not be able to connect. Enable debug log for more info");
-                        debug!("{:?}", e);
-                    }
-                },
-
                 "script" => {
                     let mut script_exec: ScriptExec = serde_json::from_str(msg).unwrap();
                     debug!("{:?}", script_exec);
@@ -379,34 +319,3 @@ async fn exec_command(cmd: &str) -> std::io::Result<String> {
         )),
     }
 }
-
-// struct InsecureServerCertVerifier;
-
-// impl rustls::client::ServerCertVerifier for InsecureServerCertVerifier {
-//     fn verify_server_cert(
-//         &self,
-//         _end_entity: &rustls::Certificate,
-//         _intermediates: &[rustls::Certificate],
-//         _server_name: &rustls::ServerName,
-//         _scts: &mut dyn Iterator<Item = &[u8]>,
-//         _ocsp_response: &[u8],
-//         _now: std::time::SystemTime,
-//     ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
-//         Ok(rustls::client::ServerCertVerified::assertion())
-//     }
-// }
-
-// #[cfg(test)]
-// mod tests {
-//     use std::time::SystemTime;
-
-//     use rustls::{server::DnsName, ServerName};
-
-//     #[test]
-//     fn test_tls_import() {
-//         let mut roots = rustls::RootCertStore::empty();
-//         let c = rustls_native_certs::load_native_certs().expect("could not load platform certs");
-//         let (acc, rej) = roots.add_parsable_certificates(&c);
-//         println!("{acc}/{rej}");
-//     }
-// }
