@@ -2,18 +2,21 @@
 
 [![codecov](https://codecov.io/gh/apimeister/unpatched-agent/branch/main/graph/badge.svg?token=98HDNPU1IZ)](https://codecov.io/gh/apimeister/unpatched-agent)
 
+Agent for [Unpatch Server](https://github.com/apimeister/unpatched-server)
+
 ## usage
 
 ```shell
 A bash first monitoring solution
 
-Usage: cargo run -- --alias <ALIAS> [--options]
+Usage: unpatched-agent [OPTIONS] --alias <ALIAS> --id <ID>
 
 Options:
   -s, --server <SERVER>          host:port with unpatched server running [default: 127.0.0.1:3000]
   -a, --alias <ALIAS>            this agents name
+      --id <ID>                  this agents id (get from server)
       --attributes <ATTRIBUTES>  attributes describing the server
-      --no-tls                   deactivate tls
+      --no-tls                   deactivate tls for frontend
   -h, --help                     Print help
   -V, --version                  Print version
 ```
@@ -42,5 +45,5 @@ use the SSL_CERT_FILE env variable to link to your self-signed rootCA
 
 ```shell
 # example
-SSL_CERT_FILE=./rootCA.crt cargo run -- --alias cool-agent-333 --attributes linux,prod
+SSL_CERT_FILE=./rootCA.crt unpatched-agent --id <generated-by-server> --alias new-agent-1 --attributes linux,prod
 ```
