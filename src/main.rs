@@ -1,6 +1,7 @@
 use clap::Parser;
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
+use rustls::ClientConfig;
 // use rustls::{ClientConfig, RootCertStore};
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
@@ -12,7 +13,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::handshake::client::generate_key;
 use tokio_tungstenite::tungstenite::http::Request;
 use tokio_tungstenite::tungstenite::{protocol::Message, Error};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, registry, EnvFilter};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -69,6 +70,22 @@ const RETRY: Duration = Duration::new(5, 0);
 
 type SenderSinkArc = Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>;
 
+struct NoCertVerifier {}
+
+impl rustls::client::ServerCertVerifier for NoCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::Certificate,
+        _intermediates: &[rustls::Certificate],
+        _server_name: &rustls::ServerName,
+        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _ocsp_response: &[u8],
+        _now: std::time::SystemTime,
+    ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::ServerCertVerified::assertion())
+    }
+}
+
 #[tokio::main]
 async fn main() {
     registry()
@@ -123,7 +140,15 @@ async fn main() {
             // get websocket stream via HTTPS
             let request = format!("wss://{}/ws", &args.server);
             *req.uri_mut() = request.parse().unwrap();
-            match tokio_tungstenite::connect_async_tls_with_config(req, None, false, None).await {
+
+            let config = ClientConfig::builder()
+                .with_safe_defaults()
+                .with_custom_certificate_verifier(Arc::new(NoCertVerifier {}))
+                .with_no_client_auth();
+            let conn = Connector::Rustls(Arc::new(config));
+            match tokio_tungstenite::connect_async_tls_with_config(req, None, false, Some(conn))
+                .await
+            {
                 Ok((a, b)) => (a, b),
                 Err(e) => {
                     error!("https error: \n{e}");
