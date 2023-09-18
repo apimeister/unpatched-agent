@@ -23,27 +23,5 @@ Options:
 
 ## TLS
 
-### Web Certificates
-
-no action needed from your side
-
-### Self-signed Certificates
-
-#### Option A
-
-add your self-signed rootCA to the CA store [More Info](https://ubuntu.com/server/docs/security-trust-store)
-
-```shell
-sudo apt-get install -y ca-certificates
-sudo cp rootCA.crt /usr/local/share/ca-certificates
-sudo update-ca-certificates
-```
-
-#### Option B
-
-use the SSL_CERT_FILE env variable to link to your self-signed rootCA
-
-```shell
-# example
-SSL_CERT_FILE=./rootCA.crt unpatched-agent --id <generated-by-server> --alias new-agent-1 --attributes linux,prod
-```
+All root certificates will be auto accepted independent from issuer
+This applies to web certificates and self-signed certificates
