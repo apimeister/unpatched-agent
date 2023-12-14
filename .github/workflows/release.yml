@@ -44,7 +44,7 @@ jobs:
         run: |
           tar -czvf unpatched-agent_x86_64-unknown-linux-musl.tar.gz ../README.md ../LICENSE -C x86_64-unknown-linux-musl/release unpatched-agent
           zip -jv unpatched-agent_x86_64-pc-windows-gnu.zip x86_64-pc-windows-gnu/release/unpatched-agent.exe ../README.md ../LICENSE
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: winlinux
           path: |
@@ -82,7 +82,7 @@ jobs:
       - name: Pack
         working-directory: target
         run: zip -jv unpatched-agent_x86_64-apple-darwin.zip release/unpatched-agent ../README.md ../LICENSE
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: mac
           path: target/unpatched-agent_x86_64-apple-darwin.zip
